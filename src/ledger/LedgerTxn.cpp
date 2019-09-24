@@ -1288,6 +1288,21 @@ LedgerTxnRoot::Impl::~Impl()
     }
 }
 
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+void
+LedgerTxnRoot::Impl::resetForFuzzer()
+{
+    mBestOffersCache.clear();
+    mEntryCache.clear();
+}
+
+void
+LedgerTxnRoot::resetForFuzzer()
+{
+    mImpl->resetForFuzzer();
+}
+#endif // FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+
 void
 LedgerTxnRoot::addChild(AbstractLedgerTxn& child)
 {
@@ -2007,29 +2022,5 @@ LedgerTxnRoot::Impl::getFromBestOffersCache(
         mBestOffersCache.clear();
         throw;
     }
-}
-
-void
-LedgerTxnRoot::writeSignersTableIntoAccountsTable()
-{
-    mImpl->writeSignersTableIntoAccountsTable();
-}
-
-void
-LedgerTxnRoot::encodeDataNamesBase64()
-{
-    mImpl->encodeDataNamesBase64();
-}
-
-void
-LedgerTxnRoot::encodeHomeDomainsBase64()
-{
-    mImpl->encodeHomeDomainsBase64();
-}
-
-void
-LedgerTxnRoot::writeOffersIntoSimplifiedOffersTable()
-{
-    mImpl->writeOffersIntoSimplifiedOffersTable();
 }
 }

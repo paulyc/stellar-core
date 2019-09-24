@@ -22,6 +22,10 @@ PutHistoryArchiveStateWork::PutHistoryArchiveStateWork(
     , mArchive(archive)
     , mLocalFilename(HistoryArchiveState::localName(app, archive->getName()))
 {
+    if (!mState.containsValidBuckets(mApp))
+    {
+        throw std::runtime_error("Malformed HAS, unable to publish");
+    }
 }
 
 void
@@ -52,7 +56,7 @@ PutHistoryArchiveStateWork::doWork()
     }
     else
     {
-        return WorkUtils::checkChildrenStatus(*this);
+        return checkChildrenStatus();
     }
 }
 

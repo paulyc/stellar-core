@@ -20,6 +20,7 @@
 #include "work/WorkScheduler.h"
 
 #ifdef BUILD_TESTS
+#include "test/Fuzzer.h"
 #include "test/fuzz.h"
 #include "test/test.h"
 #endif
@@ -161,6 +162,13 @@ ParserWithValidation
 fileNameParser(std::string& string)
 {
     return requiredArgParser(string, "FILE-NAME");
+}
+
+clara::Opt
+processIDParser(int& num)
+{
+    return clara::Opt{num, "PROCESS-ID"}["--process_id"](
+        "for spawning multiple instances in fuzzing parallelization");
 }
 
 clara::Opt
@@ -860,18 +868,48 @@ runSimulate(CommandLineArgs const& args)
         });
 }
 
+ParserWithValidation
+fuzzerModeParser(std::string& fuzzerModeArg, FuzzerMode& fuzzerMode)
+{
+    auto validateFuzzerMode = [&] {
+        if (iequals(fuzzerModeArg, "overlay"))
+        {
+            fuzzerMode = FuzzerMode::OVERLAY;
+            return "";
+        }
+
+        if (iequals(fuzzerModeArg, "tx"))
+        {
+            fuzzerMode = FuzzerMode::TRANSACTION;
+            return "";
+        }
+
+        return "Unrecognized fuzz mode. Please select a valid mode.";
+    };
+
+    return {clara::Opt{fuzzerModeArg, "FUZZER-MODE"}["--mode"](
+                "set the fuzzer mode. Expected modes: overlay, "
+                "tx. Defaults to overlay."),
+            validateFuzzerMode};
+}
+
 int
 runFuzz(CommandLineArgs const& args)
 {
     el::Level logLevel{el::Level::Info};
     std::vector<std::string> metrics;
     std::string fileName;
+    int processID = 0;
+    FuzzerMode fuzzerMode{FuzzerMode::OVERLAY};
+    std::string fuzzerModeArg = "overlay";
 
     return runWithHelp(args,
                        {logLevelParser(logLevel), metricsParser(metrics),
-                        fileNameParser(fileName)},
+                        fileNameParser(fileName), processIDParser(processID),
+                        fuzzerModeParser(fuzzerModeArg, fuzzerMode)},
                        [&] {
-                           fuzz(fileName, logLevel, metrics);
+                           fuzz(fileName, logLevel, metrics, processID,
+                                fuzzerMode);
                            return 0;
                        });
 }
@@ -880,11 +918,17 @@ int
 runGenFuzz(CommandLineArgs const& args)
 {
     std::string fileName;
+    FuzzerMode fuzzerMode{FuzzerMode::OVERLAY};
+    std::string fuzzerModeArg = "overlay";
+    int processID = 0;
 
-    return runWithHelp(args, {fileNameParser(fileName)}, [&] {
-        genfuzz(fileName);
-        return 0;
-    });
+    return runWithHelp(
+        args,
+        {fileNameParser(fileName), fuzzerModeParser(fuzzerModeArg, fuzzerMode)},
+        [&] {
+            FuzzUtils::createFuzzer(processID, fuzzerMode)->genFuzz(fileName);
+            return 0;
+        });
 }
 #endif
 
@@ -955,7 +999,7 @@ handleCommandLine(int argc, char* const* argv)
     auto commandName = fmt::format("{0} {1}", exeName, command->name());
     auto args = CommandLineArgs{exeName, commandName, command->description(),
                                 adjustedCommandLine.second};
-    if (command->name() == "run")
+    if (command->name() == "run" || command->name() == "fuzz")
     {
         // run outside of catch block so that we properly capture crashes
         return command->run(args);

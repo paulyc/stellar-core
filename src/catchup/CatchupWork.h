@@ -7,6 +7,7 @@
 #include "catchup/CatchupConfiguration.h"
 #include "catchup/VerifyLedgerChainWork.h"
 #include "history/HistoryArchive.h"
+#include "historywork/GetHistoryArchiveStateWork.h"
 #include "ledger/LedgerRange.h"
 #include "work/Work.h"
 #include "work/WorkSequence.h"
@@ -132,12 +133,10 @@ class CatchupWork : public Work
 
     CatchupWork(Application& app, CatchupConfiguration catchupConfiguration,
                 ProgressHandler progressHandler);
-    ~CatchupWork();
+    virtual ~CatchupWork();
     std::string getStatus() const override;
 
   private:
-    HistoryArchiveState mRemoteState;
-    HistoryArchiveState mApplyBucketsRemoteState;
     LedgerNumHashPair mLastClosedLedgerHashPair;
     CatchupConfiguration const mCatchupConfiguration;
     LedgerHeaderHistoryEntry mVerifiedLedgerRangeStart;
@@ -145,13 +144,13 @@ class CatchupWork : public Work
     ProgressHandler mProgressHandler;
     bool mBucketsAppliedEmitted{false};
 
-    std::shared_ptr<BasicWork> mGetHistoryArchiveStateWork;
-    std::shared_ptr<BasicWork> mGetBucketStateWork;
+    std::shared_ptr<GetHistoryArchiveStateWork> mGetHistoryArchiveStateWork;
+    std::shared_ptr<GetHistoryArchiveStateWork> mGetBucketStateWork;
 
     WorkSeqPtr mDownloadVerifyLedgersSeq;
     std::shared_ptr<VerifyLedgerChainWork> mVerifyLedgers;
     WorkSeqPtr mBucketVerifyApplySeq;
-    WorkSeqPtr mTransactionsVerifyApplySeq;
+    std::shared_ptr<Work> mTransactionsVerifyApplySeq;
     WorkSeqPtr mCatchupSeq;
 
     bool hasAnyLedgersToCatchupTo() const;
@@ -161,6 +160,7 @@ class CatchupWork : public Work
     void downloadVerifyLedgerChain(CatchupRange const& catchupRange,
                                    LedgerNumHashPair rangeEnd);
     WorkSeqPtr downloadApplyBuckets();
-    WorkSeqPtr downloadApplyTransactions(CatchupRange const& catchupRange);
+    void downloadApplyTransactions(CatchupRange const& catchupRange);
+    BasicWork::State runCatchupStep();
 };
 }

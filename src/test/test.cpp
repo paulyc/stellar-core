@@ -168,6 +168,9 @@ getTestConfig(int instanceNumber, Config::TestDbMode mode)
         {
         case Config::TESTDB_IN_MEMORY_SQLITE:
             dbname << "sqlite3://:memory:";
+            // When we're running on an in-memory sqlite we're
+            // probably not concerned with bucket durability.
+            thisConfig.DISABLE_XDR_FSYNC = true;
             break;
         case Config::TESTDB_ON_DISK_SQLITE:
             dbname << "sqlite3://" << rootDir << "test" << instanceNumber
@@ -190,55 +193,6 @@ getTestConfig(int instanceNumber, Config::TestDbMode mode)
         thisConfig.QUORUM_INTERSECTION_CHECKER = false;
     }
     return *cfgs[instanceNumber];
-}
-
-int
-test(int argc, char* const* argv, el::Level ll,
-     std::vector<std::string> const& metrics)
-{
-    gTestMetrics = metrics;
-
-    // Note: Have to setLogLevel twice here to ensure --list-test-names-only is
-    // not mixed with stellar-core logging.
-    Logging::setFmt("<test>");
-    Logging::setLogLevel(ll, nullptr);
-    Config const& cfg = getTestConfig();
-    Logging::setLoggingToFile(cfg.LOG_FILE_PATH);
-    Logging::setLogLevel(ll, nullptr);
-
-    LOG(INFO) << "Testing stellar-core " << STELLAR_CORE_VERSION;
-    LOG(INFO) << "Logging to " << cfg.LOG_FILE_PATH;
-
-    using namespace Catch;
-    Session session{};
-
-    auto cli = session.cli();
-    cli |= clara::Opt(gTestAllVersions)["--all-versions"]("Test all versions");
-    cli |= clara::Opt(gVersionsToTest,
-                      "version")["--version"]("Test specific version(s)");
-    cli |= clara::Opt(gBaseInstance, "offset")["--base-instance"](
-        "Instance number offset so multiple instances of "
-        "stellar-core can run tests concurrently");
-    session.cli(cli);
-
-    auto r = session.applyCommandLine(argc, argv);
-    if (r != 0)
-        return r;
-    ReseedPRNGListener::sCommandLineSeed = session.configData().rngSeed;
-    ReseedPRNGListener::reseed();
-    if (gVersionsToTest.empty())
-    {
-        gVersionsToTest.emplace_back(Config::CURRENT_LEDGER_PROTOCOL_VERSION);
-    }
-    r = session.run();
-    gTestRoots.clear();
-    gTestCfg->clear();
-    if (r != 0 && ReseedPRNGListener::sCommandLineSeed != 0)
-    {
-        LOG(FATAL) << "Nonzero test result with --rng-seed "
-                   << ReseedPRNGListener::sCommandLineSeed;
-    }
-    return r;
 }
 
 int

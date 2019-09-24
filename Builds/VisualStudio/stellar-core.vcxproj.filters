@@ -282,6 +282,9 @@
     <ClCompile Include="..\..\src\work\BasicWork.cpp">
       <Filter>work</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\work\ConditionalWork.cpp">
+      <Filter>work</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\src\work\Work.cpp">
       <Filter>work</Filter>
     </ClCompile>
@@ -345,7 +348,7 @@
     <ClCompile Include="..\..\src\catchup\ApplyBucketsWork.cpp">
       <Filter>catchup</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\src\catchup\ApplyLedgerChainWork.cpp">
+    <ClCompile Include="..\..\src\catchup\ApplyCheckpointWork.cpp">
       <Filter>catchup</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\catchup\CatchupConfiguration.cpp">
@@ -355,6 +358,9 @@
       <Filter>catchup</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\catchup\CatchupWork.cpp">
+      <Filter>catchup</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\catchup\DownloadApplyTxsWork.cpp">
       <Filter>catchup</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\catchup\VerifyLedgerChainWork.cpp">
@@ -384,7 +390,7 @@
     <ClCompile Include="..\..\src\historywork\GunzipFileWork.cpp">
       <Filter>historyWork</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\src\historywork\GzipAndPutFilesWork.cpp">
+    <ClCompile Include="..\..\src\historywork\PutFilesWork.cpp">
       <Filter>historyWork</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\historywork\GzipFileWork.cpp">
@@ -406,9 +412,6 @@
       <Filter>historyWork</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\historywork\PutSnapshotFilesWork.cpp">
-      <Filter>historyWork</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\src\historywork\RepairMissingBucketsWork.cpp">
       <Filter>historyWork</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\historywork\ResolveSnapshotWork.cpp">
@@ -831,9 +834,6 @@
     <ClCompile Include="..\..\src\transactions\OperationFrame.cpp">
       <Filter>transactions</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\src\transactions\PathPaymentOpFrame.cpp">
-      <Filter>transactions</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\src\transactions\PaymentOpFrame.cpp">
       <Filter>transactions</Filter>
     </ClCompile>
@@ -974,6 +974,24 @@
     </ClCompile>
     <ClCompile Include="..\..\src\transactions\simulation\SimulationTransactionFrame.cpp">
       <Filter>transactions\simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\test\FuzzerImpl.cpp">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\util\FileSystemException.cpp">
+      <Filter>util</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\transactions\test\PathPaymentStrictSendTests.cpp">
+      <Filter>transactions\tests</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\transactions\PathPaymentOpFrameBase.cpp">
+      <Filter>transactions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\transactions\PathPaymentStrictReceiveOpFrame.cpp">
+      <Filter>transactions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\transactions\PathPaymentStrictSendOpFrame.cpp">
+      <Filter>transactions</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -1133,6 +1151,9 @@
     <ClInclude Include="..\..\src\work\BasicWork.h">
       <Filter>work</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\src\work\ConditionalWork.h">
+      <Filter>work</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\src\work\Work.h">
       <Filter>work</Filter>
     </ClInclude>
@@ -1211,7 +1232,7 @@
     <ClInclude Include="..\..\src\catchup\ApplyBucketsWork.h">
       <Filter>catchup</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\src\catchup\ApplyLedgerChainWork.h">
+    <ClInclude Include="..\..\src\catchup\ApplyCheckpointWork.h">
       <Filter>catchup</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\catchup\CatchupConfiguration.h">
@@ -1224,6 +1245,9 @@
       <Filter>catchup</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\catchup\CatchupWork.h">
+      <Filter>catchup</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\catchup\DownloadApplyTxsWork.h">
       <Filter>catchup</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\catchup\VerifyLedgerChainWork.h">
@@ -1256,7 +1280,7 @@
     <ClInclude Include="..\..\src\historywork\GzipFileWork.h">
       <Filter>historyWork</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\src\historywork\GzipAndPutFilesWork.h">
+    <ClInclude Include="..\..\src\historywork\PutFilesWork.h">
       <Filter>historyWork</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\historywork\MakeRemoteDirWork.h">
@@ -1275,9 +1299,6 @@
       <Filter>historyWork</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\historywork\PutSnapshotFilesWork.h">
-      <Filter>historyWork</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\src\historywork\RepairMissingBucketsWork.h">
       <Filter>historyWork</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\historywork\ResolveSnapshotWork.h">
@@ -1568,9 +1589,6 @@
     <ClInclude Include="..\..\src\transactions\OperationFrame.h">
       <Filter>transactions</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\src\transactions\PathPaymentOpFrame.h">
-      <Filter>transactions</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\src\transactions\PaymentOpFrame.h">
       <Filter>transactions</Filter>
     </ClInclude>
@@ -1684,6 +1702,18 @@
     </ClInclude>
     <ClInclude Include="..\..\src\transactions\simulation\SimulationTransactionFrame.h">
       <Filter>transactions\simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\test\FuzzerImpl.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\transactions\PathPaymentOpFrameBase.h">
+      <Filter>transactions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\transactions\PathPaymentStrictReceiveOpFrame.h">
+      <Filter>transactions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\transactions\PathPaymentStrictSendOpFrame.h">
+      <Filter>transactions</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

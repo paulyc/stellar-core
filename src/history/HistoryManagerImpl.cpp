@@ -19,7 +19,6 @@
 #include "historywork/FetchRecentQsetsWork.h"
 #include "historywork/PublishWork.h"
 #include "historywork/PutSnapshotFilesWork.h"
-#include "historywork/RepairMissingBucketsWork.h"
 #include "historywork/ResolveSnapshotWork.h"
 #include "historywork/WriteSnapshotWork.h"
 #include "ledger/LedgerManager.h"
@@ -68,7 +67,6 @@ HistoryManagerImpl::HistoryManagerImpl(Application& app)
     : mApp(app)
     , mWorkDir(nullptr)
     , mPublishWork(nullptr)
-
     , mPublishSuccess(
           app.getMetrics().NewMeter({"history", "publish", "success"}, "event"))
     , mPublishFailure(
@@ -176,14 +174,6 @@ HistoryManagerImpl::localFilename(std::string const& basename)
     return this->getTmpDir() + "/" + basename;
 }
 
-HistoryArchiveState
-HistoryManagerImpl::getLastClosedHistoryArchiveState() const
-{
-    auto seq = mApp.getLedgerManager().getLastClosedLedgerNum();
-    auto& bl = mApp.getBucketManager().getBucketList();
-    return HistoryArchiveState(seq, bl);
-}
-
 InferredQuorum
 HistoryManagerImpl::inferQuorum(uint32_t ledgerNum)
 {
@@ -252,9 +242,9 @@ HistoryManagerImpl::maybeQueueHistoryCheckpoint()
 void
 HistoryManagerImpl::queueCurrentHistory()
 {
-    auto has = getLastClosedHistoryArchiveState();
+    auto ledger = mApp.getLedgerManager().getLastClosedLedgerNum();
+    HistoryArchiveState has(ledger, mApp.getBucketManager().getBucketList());
 
-    auto ledger = has.currentLedger;
     CLOG(DEBUG, "History") << "Queueing publish state for ledger " << ledger;
     mEnqueueTimes.emplace(ledger, std::chrono::steady_clock::now());
 
@@ -287,6 +277,14 @@ HistoryManagerImpl::takeSnapshotAndPublish(HistoryArchiveState const& has)
     {
         return;
     }
+    // Ensure no merges are in-progress, and capture the bucket list hashes
+    // *before* doing the actual publish. This ensures that the HAS is in
+    // pristine state as returned by the database.
+    for (auto const& bucket : has.currentBuckets)
+    {
+        assert(!bucket.next.isLive());
+    }
+    auto allBucketsFromHAS = has.allBuckets();
     auto ledgerSeq = has.currentLedger;
     CLOG(DEBUG, "History") << "Activating publish for ledger " << ledgerSeq;
     auto snap = std::make_shared<StateSnapshot>(mApp, has);
@@ -300,7 +298,11 @@ HistoryManagerImpl::takeSnapshotAndPublish(HistoryArchiveState const& has)
 
     std::vector<std::shared_ptr<BasicWork>> seq{resolveFutures, writeSnap,
                                                 putSnap};
-    mPublishWork = mApp.getWorkScheduler().scheduleWork<PublishWork>(snap, seq);
+    // Pass in all bucket hashes from HAS. We cannot rely on StateSnapshot
+    // buckets here, because its buckets might have some futures resolved by
+    // now, differing from the state of the bucketlist during queueing.
+    mPublishWork = mApp.getWorkScheduler().scheduleWork<PublishWork>(
+        snap, seq, allBucketsFromHAS);
 }
 
 size_t
@@ -439,16 +441,6 @@ HistoryManagerImpl::historyPublished(
     mPublishWork.reset();
     mApp.postOnMainThread([this]() { this->publishQueuedHistory(); },
                           "HistoryManagerImpl: publishQueuedHistory");
-}
-
-void
-HistoryManagerImpl::downloadMissingBuckets(
-    HistoryArchiveState desiredState,
-    std::function<void(asio::error_code const& ec)> handler)
-{
-    CLOG(INFO, "History") << "Starting RepairMissingBucketsWork";
-    mApp.getWorkScheduler().scheduleWork<RepairMissingBucketsWork>(desiredState,
-                                                                   handler);
 }
 
 uint64_t

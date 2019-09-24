@@ -51,7 +51,7 @@ printStats(int& nLedgers, std::chrono::system_clock::time_point tBegin,
     LOG(INFO) << sim->metricsSummary("scp");
 }
 
-TEST_CASE("3 nodes 2 running threshold 2", "[simulation][core3]")
+TEST_CASE("3 nodes 2 running threshold 2", "[simulation][core3][acceptance]")
 {
     Simulation::Mode mode = Simulation::OVER_LOOPBACK;
     SECTION("Over loopback")
@@ -104,7 +104,8 @@ TEST_CASE("3 nodes 2 running threshold 2", "[simulation][core3]")
     LOG(DEBUG) << "done with core3 test";
 }
 
-TEST_CASE("core topology 4 ledgers at scales 2 to 4", "[simulation]")
+TEST_CASE("core topology 4 ledgers at scales 2 to 4",
+          "[simulation][acceptance]")
 {
     Simulation::Mode mode = Simulation::OVER_LOOPBACK;
     SECTION("Over loopback")
@@ -245,7 +246,7 @@ hierarchicalTopoTest(int nLedgers, int nBranches, Simulation::Mode mode,
     REQUIRE(sim->haveAllExternalized(nLedgers + 1, 5));
 }
 
-TEST_CASE("hierarchical topology scales 1 to 3", "[simulation]")
+TEST_CASE("hierarchical topology scales 1 to 3", "[simulation][acceptance]")
 {
     Hash networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
     Simulation::Mode mode = Simulation::OVER_LOOPBACK;
@@ -289,7 +290,7 @@ hierarchicalSimplifiedTest(int nLedgers, int nbCore, int nbOuterNodes,
     REQUIRE(sim->haveAllExternalized(nLedgers + 1, 3));
 }
 
-TEST_CASE("core nodes with outer nodes", "[simulation]")
+TEST_CASE("core nodes with outer nodes", "[simulation][acceptance]")
 {
     Hash networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
     Simulation::Mode mode = Simulation::OVER_LOOPBACK;
@@ -337,7 +338,8 @@ TEST_CASE(
     auto nodes = simulation->getNodes();
     auto& app = *nodes[0]; // pick a node to generate load
 
-    app.getLoadGenerator().generateLoad(true, 3, 0, 0, 10, 100);
+    auto& lg = app.getLoadGenerator();
+    lg.generateLoad(true, 3, 0, 0, 10, 100);
     try
     {
         simulation->crankUntil(
@@ -346,21 +348,21 @@ TEST_CASE(
                 // to the second node in time and the second node gets the
                 // nomination
                 return simulation->haveAllExternalized(5, 2) &&
-                       simulation->accountsOutOfSyncWithDb(app).empty();
+                       lg.checkAccountSynced(app, true).empty();
             },
             3 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, false);
 
-        app.getLoadGenerator().generateLoad(false, 3, 0, 10, 10, 100);
+        lg.generateLoad(false, 3, 0, 10, 10, 100);
         simulation->crankUntil(
             [&]() {
                 return simulation->haveAllExternalized(8, 2) &&
-                       simulation->accountsOutOfSyncWithDb(app).empty();
+                       lg.checkAccountSynced(app, false).empty();
             },
             2 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, true);
     }
     catch (...)
     {
-        auto problems = simulation->accountsOutOfSyncWithDb(app);
+        auto problems = lg.checkAccountSynced(app, false);
         REQUIRE(problems.empty());
     }
 
@@ -510,14 +512,15 @@ netTopologyTest(std::string const& name,
         assert(!nodes.empty());
         auto& app = *nodes[0];
 
-        app.getLoadGenerator().generateLoad(true, 50, 0, 0, 10, 100);
+        auto& lg = app.getLoadGenerator();
+        lg.generateLoad(true, 50, 0, 0, 10, 100);
         auto& complete =
             app.getMetrics().NewMeter({"loadgen", "run", "complete"}, "run");
 
         sim->crankUntil(
             [&]() {
                 return sim->haveAllExternalized(8, 2) &&
-                       sim->accountsOutOfSyncWithDb(app).empty() &&
+                       lg.checkAccountSynced(app, true).empty() &&
                        complete.count() == 1;
             },
             2 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, true);

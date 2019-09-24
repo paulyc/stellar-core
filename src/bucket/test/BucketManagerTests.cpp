@@ -27,6 +27,8 @@
 #include "util/Math.h"
 #include "util/Timer.h"
 
+#include <cstdio>
+
 using namespace stellar;
 using namespace BucketTests;
 
@@ -281,20 +283,20 @@ TEST_CASE("bucketmanager ownership", "[bucket][bucketmanager]")
         std::shared_ptr<Bucket> b1;
 
         {
-            std::shared_ptr<Bucket> b2 =
-                Bucket::fresh(app->getBucketManager(), getAppLedgerVersion(app),
-                              {}, live, dead, /*countMergeEvents=*/true);
+            std::shared_ptr<Bucket> b2 = Bucket::fresh(
+                app->getBucketManager(), getAppLedgerVersion(app), {}, live,
+                dead, /*countMergeEvents=*/true, /*doFsync=*/true);
             b1 = b2;
 
             // Bucket is referenced by b1, b2 and the BucketManager.
             CHECK(b1.use_count() == 3);
 
-            std::shared_ptr<Bucket> b3 =
-                Bucket::fresh(app->getBucketManager(), getAppLedgerVersion(app),
-                              {}, live, dead, /*countMergeEvents=*/true);
-            std::shared_ptr<Bucket> b4 =
-                Bucket::fresh(app->getBucketManager(), getAppLedgerVersion(app),
-                              {}, live, dead, /*countMergeEvents=*/true);
+            std::shared_ptr<Bucket> b3 = Bucket::fresh(
+                app->getBucketManager(), getAppLedgerVersion(app), {}, live,
+                dead, /*countMergeEvents=*/true, /*doFsync=*/true);
+            std::shared_ptr<Bucket> b4 = Bucket::fresh(
+                app->getBucketManager(), getAppLedgerVersion(app), {}, live,
+                dead, /*countMergeEvents=*/true, /*doFsync=*/true);
             // Bucket is referenced by b1, b2, b3, b4 and the BucketManager.
             CHECK(b1.use_count() == 5);
         }
@@ -339,6 +341,44 @@ TEST_CASE("bucketmanager ownership", "[bucket][bucketmanager]")
     });
 }
 
+TEST_CASE("bucketmanager missing buckets fail", "[bucket][bucketmanager]")
+{
+    Config cfg(getTestConfig(0, Config::TESTDB_ON_DISK_SQLITE));
+    std::string someBucketFileName;
+    {
+        VirtualClock clock;
+        auto app =
+            createTestApplication<LedgerManagerTestApplication>(clock, cfg);
+        app->start();
+        BucketManager& bm = app->getBucketManager();
+        BucketList& bl = bm.getBucketList();
+        LedgerManagerForBucketTests& lm = app->getLedgerManager();
+
+        uint32_t ledger = 0;
+        uint32_t level = 3;
+        do
+        {
+            ++ledger;
+            lm.setNextLedgerEntryBatchForBucketTesting(
+                {}, LedgerTestUtils::generateValidLedgerEntries(10), {});
+            closeLedger(*app);
+        } while (!BucketList::levelShouldSpill(ledger, level - 1));
+        auto someBucket = bl.getLevel(1).getCurr();
+        someBucketFileName = someBucket->getFilename();
+    }
+
+    // Delete a bucket from the bucket dir
+    REQUIRE(std::remove(someBucketFileName.c_str()) == 0);
+
+    // Check that restarting the app crashes.
+    {
+        VirtualClock clock;
+        Application::pointer app =
+            createTestApplication(clock, cfg, /*newDB=*/false);
+        CHECK_THROWS_AS(app->start(), std::runtime_error);
+    }
+}
+
 TEST_CASE("bucketmanager reattach to finished merge", "[bucket][bucketmanager]")
 {
     VirtualClock clock;
@@ -376,8 +416,8 @@ TEST_CASE("bucketmanager reattach to finished merge", "[bucket][bucketmanager]")
         // followed by the typical ledger-close bucket GC event.
         bl.getLevel(level).commit();
         REQUIRE(!bl.getLevel(level).getNext().isMerging());
-
-        REQUIRE(bm.readMergeCounters().mFinishedMergeReattachments == 0);
+        auto ra = bm.readMergeCounters().mFinishedMergeReattachments;
+        REQUIRE(ra == 0);
 
         // Deserialize HAS.
         HistoryArchiveState has2;
@@ -392,7 +432,8 @@ TEST_CASE("bucketmanager reattach to finished merge", "[bucket][bucketmanager]")
         has2.currentBuckets[level].next.resolve();
 
         // Check that we reattached to a finished merge.
-        REQUIRE(bm.readMergeCounters().mFinishedMergeReattachments != 0);
+        ra = bm.readMergeCounters().mFinishedMergeReattachments;
+        REQUIRE(ra != 0);
     });
 }
 
@@ -464,7 +505,8 @@ TEST_CASE("bucketmanager reattach to running merge", "[bucket][bucketmanager]")
         CLOG(INFO, "Bucket")
             << "reattached to running merge at or around ledger " << ledger;
         REQUIRE(ledger < limit);
-        REQUIRE(bm.readMergeCounters().mRunningMergeReattachments != 0);
+        auto ra = bm.readMergeCounters().mFinishedMergeReattachments;
+        REQUIRE(ra != 0);
     });
 }
 
@@ -488,15 +530,20 @@ TEST_CASE("bucketmanager reattach HAS from publish queue to finished merge",
         auto& lm = app->getLedgerManager();
         hm.setPublicationEnabled(false);
         app->start();
-        app->getHistoryArchiveManager().initializeHistoryArchive("test");
+        app->getHistoryArchiveManager().initializeHistoryArchive(
+            tcfg.getArchiveDirName());
         while (hm.getPublishQueueCount() < 5)
         {
+            // Do not merge this line with the next line: CLOG and
+            // readMergeCounters each acquire a mutex, and it's possible to
+            // deadlock with one of the worker threads if you try to hold them
+            // both at the same time.
+            auto ra = bm.readMergeCounters().mFinishedMergeReattachments;
             CLOG(INFO, "Bucket")
-                << "finished-merge reattachments: "
-                << bm.readMergeCounters().mFinishedMergeReattachments;
+                << "finished-merge reattachments while queueing: " << ra;
             bl.addBatch(*app, lm.getLastClosedLedgerNum() + 1, vers, {},
                         LedgerTestUtils::generateValidLedgerEntries(100), {});
-            clock.crank(true);
+            clock.crank(false);
             bm.forgetUnreferencedBuckets();
         }
         // We should have published nothing and have the first
@@ -522,27 +569,20 @@ TEST_CASE("bucketmanager reattach HAS from publish queue to finished merge",
 
         // This is the key check of the test: re-enabling the merges worked
         // and caused a bunch of finished-merge reattachments.
-        REQUIRE(bm.readMergeCounters().mFinishedMergeReattachments !=
-                oldReattachments);
+        auto ra = bm.readMergeCounters().mFinishedMergeReattachments;
+        REQUIRE(ra != oldReattachments);
         CLOG(INFO, "Bucket")
-            << "finished-merge reattachments: "
-            << bm.readMergeCounters().mFinishedMergeReattachments;
+            << "finished-merge reattachments after making-live: " << ra;
 
         // Un-cork the publication process, nothing should be broken.
         hm.setPublicationEnabled(true);
         while (hm.getPublishSuccessCount() < 5)
         {
-            clock.crank(true);
+            clock.crank(false);
 
             // Trim history after publishing whenever possible.
             ExternalQueue ps(*app);
             ps.deleteOldEntries(50000);
-        }
-        clock.cancelAllEvents();
-        while (clock.cancelAllEvents() ||
-               app->getProcessManager().getNumRunningProcesses() > 0)
-        {
-            clock.crank(true);
         }
     }
 }
@@ -612,6 +652,12 @@ class StopAndRestartBucketMergesTest
                                  << mMergeCounters.mPreInitEntryProtocolMerges;
             CLOG(INFO, "Bucket") << "PostInitEntryProtocolMerges: "
                                  << mMergeCounters.mPostInitEntryProtocolMerges;
+            CLOG(INFO, "Bucket")
+                << "mPreShadowRemovalProtocolMerges: "
+                << mMergeCounters.mPreShadowRemovalProtocolMerges;
+            CLOG(INFO, "Bucket")
+                << "mPostShadowRemovalProtocolMerges: "
+                << mMergeCounters.mPostShadowRemovalProtocolMerges;
             CLOG(INFO, "Bucket") << "RunningMergeReattachments: "
                                  << mMergeCounters.mRunningMergeReattachments;
             CLOG(INFO, "Bucket") << "FinishedMergeReattachments: "
@@ -668,9 +714,17 @@ class StopAndRestartBucketMergesTest
         }
 
         void
-        checkSensiblePostInitEntryMergeCounters() const
+        checkSensiblePostInitEntryMergeCounters(uint32_t protocol) const
         {
             CHECK(mMergeCounters.mPostInitEntryProtocolMerges != 0);
+            if (protocol < Bucket::FIRST_PROTOCOL_SHADOWS_REMOVED)
+            {
+                CHECK(mMergeCounters.mPostShadowRemovalProtocolMerges == 0);
+            }
+            else
+            {
+                CHECK(mMergeCounters.mPostShadowRemovalProtocolMerges != 0);
+            }
 
             CHECK(mMergeCounters.mNewMetaEntries == 0);
             CHECK(mMergeCounters.mNewInitEntries != 0);
@@ -689,9 +743,18 @@ class StopAndRestartBucketMergesTest
             CHECK(mMergeCounters.mOldInitEntriesMergedWithNewDead != 0);
             CHECK(mMergeCounters.mNewEntriesMergedWithOldNeitherInit != 0);
 
-            CHECK(mMergeCounters.mShadowScanSteps != 0);
+            if (protocol < Bucket::FIRST_PROTOCOL_SHADOWS_REMOVED)
+            {
+                CHECK(mMergeCounters.mShadowScanSteps != 0);
+                CHECK(mMergeCounters.mLiveEntryShadowElisions != 0);
+            }
+            else
+            {
+                CHECK(mMergeCounters.mShadowScanSteps == 0);
+                CHECK(mMergeCounters.mLiveEntryShadowElisions == 0);
+            }
+
             CHECK(mMergeCounters.mMetaEntryShadowElisions == 0);
-            CHECK(mMergeCounters.mLiveEntryShadowElisions != 0);
             CHECK(mMergeCounters.mInitEntryShadowElisions == 0);
             CHECK(mMergeCounters.mDeadEntryShadowElisions == 0);
 
@@ -705,6 +768,7 @@ class StopAndRestartBucketMergesTest
         checkSensiblePreInitEntryMergeCounters() const
         {
             CHECK(mMergeCounters.mPreInitEntryProtocolMerges != 0);
+            CHECK(mMergeCounters.mPreShadowRemovalProtocolMerges != 0);
 
             CHECK(mMergeCounters.mNewMetaEntries == 0);
             CHECK(mMergeCounters.mNewInitEntries == 0);
@@ -742,6 +806,11 @@ class StopAndRestartBucketMergesTest
                   other.mMergeCounters.mPreInitEntryProtocolMerges);
             CHECK(mMergeCounters.mPostInitEntryProtocolMerges ==
                   other.mMergeCounters.mPostInitEntryProtocolMerges);
+
+            CHECK(mMergeCounters.mPreShadowRemovalProtocolMerges ==
+                  other.mMergeCounters.mPreShadowRemovalProtocolMerges);
+            CHECK(mMergeCounters.mPostShadowRemovalProtocolMerges ==
+                  other.mMergeCounters.mPostShadowRemovalProtocolMerges);
 
             CHECK(mMergeCounters.mRunningMergeReattachments ==
                   other.mMergeCounters.mRunningMergeReattachments);
@@ -1188,7 +1257,7 @@ class StopAndRestartBucketMergesTest
             mControlSurveys.rbegin()->second.dumpMergeCounters(
                 "control, Post-INITENTRY", mDesignatedLevel);
             mControlSurveys.rbegin()
-                ->second.checkSensiblePostInitEntryMergeCounters();
+                ->second.checkSensiblePostInitEntryMergeCounters(mProtocol);
         }
         else
         {
@@ -1207,7 +1276,8 @@ TEST_CASE("bucket persistence over app restart with initentry",
 {
     for (uint32_t protocol :
          {Bucket::FIRST_PROTOCOL_SUPPORTING_INITENTRY_AND_METAENTRY - 1,
-          Bucket::FIRST_PROTOCOL_SUPPORTING_INITENTRY_AND_METAENTRY})
+          Bucket::FIRST_PROTOCOL_SUPPORTING_INITENTRY_AND_METAENTRY,
+          Bucket::FIRST_PROTOCOL_SHADOWS_REMOVED})
     {
         for (uint32_t level : {2, 3})
         {
@@ -1223,7 +1293,8 @@ TEST_CASE("bucket persistence over app restart with initentry - extended",
 {
     for (uint32_t protocol :
          {Bucket::FIRST_PROTOCOL_SUPPORTING_INITENTRY_AND_METAENTRY - 1,
-          Bucket::FIRST_PROTOCOL_SUPPORTING_INITENTRY_AND_METAENTRY})
+          Bucket::FIRST_PROTOCOL_SUPPORTING_INITENTRY_AND_METAENTRY,
+          Bucket::FIRST_PROTOCOL_SHADOWS_REMOVED})
     {
         for (uint32_t level : {2, 3, 4, 5})
         {

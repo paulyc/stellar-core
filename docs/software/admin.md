@@ -227,7 +227,8 @@ and set the following value in your config:
 If you don't include a `NODE_SEED` or set `NODE_IS_VALIDATOR=true`, you will still
 watch SCP and see all the data in the network but will not send validation messages.
 
-If you run more than one node, set the `HOME_DOMAIN` common to those nodes.  Doing so will allow your nodes to be grouped correctly during [quorum set generation](#home-domains-array).
+NB: if you run more than one node, set the `HOME_DOMAIN` common to those nodes using the `NODE_HOME_DOMAIN` property.
+Doing so will allow your nodes to be grouped correctly during [quorum set generation](#home-domains-array).
 
 If you want other validators to add your node to their quorum sets, you should also share your public key (GDMTUTQ... ) by publishing a stellar.toml file on your homedomain following specs laid out in [SEP-20](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0020.md). 
 
@@ -344,7 +345,7 @@ Once you add validators to your configuration, stellar core automatically genera
 
 Here's a diagram depicting the nested quality levels and how they interact:
 
-![Diagram Automatic Quorum Set Generation](https://github.com/stellar/docs/blob/master/guides/walkthroughs/assets/validator_complete.png)
+![Diagram Automatic Quorum Set Generation](https://raw.githubusercontent.com/stellar/docs/master/guides/walkthroughs/assets/validator_complete.png)
 
 
 #### Quorum and overlay network
@@ -457,7 +458,7 @@ archives.
 
 You can configure any number of archives to download from: stellar-core will automatically round-robin between them.
 
-At a minimum you should configure `get` archives for each full validator referenced from your quorum set (see [crafting  a quorum set](#crafting-a-quorum-set) for more detail).
+At a minimum you should configure `get` archives for each full validator referenced from your quorum set (see the `HISTORY` field in [validators array](#validators-array) for more detail).
 
 Note: if you notice a lot of errors related to downloading archives, you should check that all archives in your configuration are up to date.
 
@@ -681,6 +682,7 @@ This list is the result of both inbound connections from other peers and outboun
      "inbound" : [
         {
            "address" : "54.161.82.181:11625",
+           "elapsed" : 6,
            "id" : "sdf1",
            "olver" : 5,
            "ver" : "v9.1.0"
@@ -689,12 +691,14 @@ This list is the result of both inbound connections from other peers and outboun
      "outbound" : [
        {
           "address" : "54.211.174.177:11625",
+          "elapsed" : 2303,
           "id" : "sdf2",
           "olver" : 5,
           "ver" : "v9.1.0"
        },
        {
           "address" : "54.160.175.7:11625",
+          "elapsed" : 14082,
           "id" : "sdf3",
           "olver" : 5,
           "ver" : "v9.1.0"

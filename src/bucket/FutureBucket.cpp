@@ -44,6 +44,15 @@ FutureBucket::FutureBucket(Application& app,
     assert(snap);
     mInputCurrBucketHash = binToHex(curr->getHash());
     mInputSnapBucketHash = binToHex(snap->getHash());
+    if (Bucket::getBucketVersion(snap) >=
+        Bucket::FIRST_PROTOCOL_SHADOWS_REMOVED)
+    {
+        if (!mInputShadowBuckets.empty())
+        {
+            throw std::runtime_error(
+                "Invalid FutureBucket: ledger version doesn't support shadows");
+        }
+    }
     for (auto const& b : mInputShadowBuckets)
     {
         mInputShadowBucketHashes.push_back(binToHex(b->getHash()));
@@ -205,6 +214,12 @@ FutureBucket::hasHashes() const
 }
 
 bool
+FutureBucket::isClear() const
+{
+    return mState == FB_CLEAR;
+}
+
+bool
 FutureBucket::mergeComplete() const
 {
     assert(isLive());
@@ -314,7 +329,6 @@ FutureBucket::startMerge(Application& app, uint32_t maxProtocolVersion,
         checkState();
         return;
     }
-
     using task_t = std::packaged_task<std::shared_ptr<Bucket>()>;
     std::shared_ptr<task_t> task = std::make_shared<task_t>(
         [curr, snap, &bm, shadows, maxProtocolVersion, countMergeEvents, level,
@@ -328,7 +342,8 @@ FutureBucket::startMerge(Application& app, uint32_t maxProtocolVersion,
             {
                 auto res = Bucket::merge(
                     bm, maxProtocolVersion, curr, snap, shadows,
-                    BucketList::keepDeadEntries(level), countMergeEvents);
+                    BucketList::keepDeadEntries(level), countMergeEvents,
+                    !app.getConfig().DISABLE_XDR_FSYNC);
 
                 CLOG(TRACE, "Bucket")
                     << "Worker finished merging curr="

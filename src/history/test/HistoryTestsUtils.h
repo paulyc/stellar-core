@@ -64,8 +64,8 @@ class S3HistoryConfigurator : public HistoryConfigurator
 
 class TmpDirHistoryConfigurator : public HistoryConfigurator
 {
+    std::string mName;
     TmpDirManager mArchtmp;
-    TmpDir mDir;
 
   public:
     TmpDirHistoryConfigurator();
@@ -73,6 +73,22 @@ class TmpDirHistoryConfigurator : public HistoryConfigurator
     std::string getArchiveDirName() const override;
 
     Config& configure(Config& cfg, bool writable) const override;
+};
+
+class MultiArchiveHistoryConfigurator : public HistoryConfigurator
+{
+    std::vector<std::shared_ptr<TmpDirHistoryConfigurator>> mConfigurators;
+
+  public:
+    explicit MultiArchiveHistoryConfigurator(uint32_t numArchives = 2);
+
+    Config& configure(Config& cfg, bool writable) const;
+
+    std::vector<std::shared_ptr<TmpDirHistoryConfigurator>>
+    getConfigurators() const
+    {
+        return mConfigurators;
+    }
 };
 
 class RealGenesisTmpDirHistoryConfigurator : public TmpDirHistoryConfigurator
@@ -211,6 +227,8 @@ class CatchupSimulation
     std::vector<SequenceNumber> bobSeqs;
     std::vector<SequenceNumber> carolSeqs;
 
+    uint32_t mTestProtocolShadowsRemovedLedgerSeq{0};
+
     CatchupMetrics getCatchupMetrics(Application::pointer app);
     CatchupPerformedWork computeCatchupPerformedWork(
         uint32_t lastClosedLedger,
@@ -222,7 +240,8 @@ class CatchupSimulation
     explicit CatchupSimulation(
         VirtualClock::Mode mode = VirtualClock::VIRTUAL_TIME,
         std::shared_ptr<HistoryConfigurator> cg =
-            std::make_shared<TmpDirHistoryConfigurator>());
+            std::make_shared<TmpDirHistoryConfigurator>(),
+        bool startApp = true);
     ~CatchupSimulation();
 
     Application&
@@ -269,6 +288,8 @@ class CatchupSimulation
     void crankUntil(Application::pointer app,
                     std::function<bool()> const& predicate,
                     VirtualClock::duration duration);
+
+    void setProto12UpgradeLedger(uint32_t ledger);
 };
 }
 }

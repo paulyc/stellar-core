@@ -83,7 +83,7 @@ TEST_CASE("HistoryArchiveState get_put", "[history]")
 
     auto archive =
         catchupSimulation.getApp().getHistoryArchiveManager().getHistoryArchive(
-            "test");
+            catchupSimulation.getHistoryConfigurator().getArchiveDirName());
     REQUIRE(archive);
 
     has.resolveAllFutures();
@@ -92,14 +92,13 @@ TEST_CASE("HistoryArchiveState get_put", "[history]")
     auto put = wm.executeWork<PutHistoryArchiveStateWork>(has, archive);
     REQUIRE(put->getState() == BasicWork::State::WORK_SUCCESS);
 
-    HistoryArchiveState has2;
-    auto get = wm.executeWork<GetHistoryArchiveStateWork>(has2, 0, archive);
+    auto get = wm.executeWork<GetHistoryArchiveStateWork>(0, archive);
     REQUIRE(get->getState() == BasicWork::State::WORK_SUCCESS);
+    HistoryArchiveState has2 = get->getHistoryArchiveState();
     REQUIRE(has2.currentLedger == 0x1234);
 }
 
-TEST_CASE("History bucket verification",
-          "[history][bucketverification][batching]")
+TEST_CASE("History bucket verification", "[history][catchup]")
 {
     /* Tests bucket verification stage of catchup. Assumes ledger chain
      * verification was successful. **/
@@ -109,10 +108,12 @@ TEST_CASE("History bucket verification",
     auto cg = std::make_shared<TmpDirHistoryConfigurator>();
     cg->configure(cfg, true);
     Application::pointer app = createTestApplication(clock, cfg);
-    REQUIRE(app->getHistoryArchiveManager().initializeHistoryArchive("test"));
+    REQUIRE(app->getHistoryArchiveManager().initializeHistoryArchive(
+        cg->getArchiveDirName()));
 
     auto bucketGenerator = TestBucketGenerator{
-        *app, app->getHistoryArchiveManager().getHistoryArchive("test")};
+        *app, app->getHistoryArchiveManager().getHistoryArchive(
+                  cg->getArchiveDirName())};
     std::vector<std::string> hashes;
     auto& wm = app->getWorkScheduler();
     std::map<std::string, std::shared_ptr<Bucket>> mBuckets;
@@ -172,7 +173,8 @@ TEST_CASE("Ledger chain verification", "[ledgerheaderverification]")
     auto cg = std::make_shared<TmpDirHistoryConfigurator>();
     cg->configure(cfg, true);
     Application::pointer app = createTestApplication(clock, cfg);
-    REQUIRE(app->getHistoryArchiveManager().initializeHistoryArchive("test"));
+    REQUIRE(app->getHistoryArchiveManager().initializeHistoryArchive(
+        cg->getArchiveDirName()));
 
     auto tmpDir = app->getTmpDirManager().tmpDir("tmp-chain-test");
     auto& wm = app->getWorkScheduler();
@@ -186,7 +188,9 @@ TEST_CASE("Ledger chain verification", "[ledgerheaderverification]")
         initLedger + app->getHistoryManager().getCheckpointFrequency() * 10};
     CheckpointRange checkpointRange{ledgerRange, app->getHistoryManager()};
     auto ledgerChainGenerator = TestLedgerChainGenerator{
-        *app, app->getHistoryArchiveManager().getHistoryArchive("test"),
+        *app,
+        app->getHistoryArchiveManager().getHistoryArchive(
+            cg->getArchiveDirName()),
         checkpointRange, tmpDir};
 
     auto checkExpectedBehavior = [&](Work::State expectedState,
@@ -283,11 +287,122 @@ TEST_CASE("Ledger chain verification", "[ledgerheaderverification]")
     }
 }
 
-TEST_CASE("History publish", "[history]")
+TEST_CASE("History publish", "[history][publish]")
 {
     CatchupSimulation catchupSimulation{};
     auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(1);
     catchupSimulation.ensureOfflineCatchupPossible(checkpointLedger);
+}
+
+TEST_CASE("History publish to multiple archives", "[history]")
+{
+    Config cfg(getTestConfig());
+    VirtualClock clock;
+    auto cg =
+        std::make_shared<MultiArchiveHistoryConfigurator>(/* numArchives */ 3);
+    CatchupSimulation catchupSimulation{VirtualClock::VIRTUAL_TIME, cg, false};
+
+    auto& app = catchupSimulation.getApp();
+    for (auto const& cfgtor : cg->getConfigurators())
+    {
+        CHECK(app.getHistoryArchiveManager().initializeHistoryArchive(
+            cfgtor->getArchiveDirName()));
+    }
+
+    app.start();
+    auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(2);
+    catchupSimulation.ensureOfflineCatchupPossible(checkpointLedger);
+
+    auto catchupApp = catchupSimulation.createCatchupApplication(
+        64, Config::TESTDB_ON_DISK_SQLITE, "app");
+
+    // Actually perform catchup and make sure everything is correct
+    REQUIRE(catchupSimulation.catchupOffline(catchupApp, checkpointLedger));
+}
+
+TEST_CASE("Publish works correctly post shadow removal", "[history]")
+{
+    // Given a HAS, verify that appropriate levels have "next" cleared, while
+    // the remaining initialized levels have output hashes.
+    auto checkFuture = [](uint32_t maxLevelCleared,
+                          uint32_t maxLevelInitialized,
+                          HistoryArchiveState const& has) {
+        REQUIRE(maxLevelCleared <= maxLevelInitialized);
+        for (uint32_t i = 0; i <= maxLevelInitialized; ++i)
+        {
+            auto next = has.currentBuckets[i].next;
+            if (i <= maxLevelCleared)
+            {
+                REQUIRE(next.isClear());
+            }
+            else
+            {
+                REQUIRE(next.hasOutputHash());
+            }
+        }
+    };
+
+    auto verifyFutureBucketsInHAS = [&](CatchupSimulation& sim,
+                                        uint32_t upgradeLedger,
+                                        uint32_t expectedLevelsCleared) {
+        // Perform publish: 2 checkpoints (or 127 ledgers) correspond to 3
+        // levels being initialized and partially filled in the bucketlist
+        sim.setProto12UpgradeLedger(upgradeLedger);
+        auto checkpointLedger = sim.getLastCheckpointLedger(2);
+        auto maxLevelTouched = 3;
+        sim.ensureOfflineCatchupPossible(checkpointLedger);
+
+        auto& app = sim.getApp();
+        auto w =
+            app.getWorkScheduler().executeWork<GetHistoryArchiveStateWork>();
+        auto has = w->getHistoryArchiveState();
+        REQUIRE(w->getState() == BasicWork::State::WORK_SUCCESS);
+        checkFuture(expectedLevelsCleared, maxLevelTouched, has);
+    };
+
+    auto configurator =
+        std::make_shared<RealGenesisTmpDirHistoryConfigurator>();
+    CatchupSimulation catchupSimulation{VirtualClock::VIRTUAL_TIME,
+                                        configurator};
+
+    uint32_t oldProto = Bucket::FIRST_PROTOCOL_SHADOWS_REMOVED - 1;
+    catchupSimulation.generateRandomLedger(oldProto);
+
+    // The next sections reflect how future buckets in HAS change, depending on
+    // the protocol version of the merge. Intuitively, if an upgrade is done
+    // closer to publish, less levels had time to start a new-style merge,
+    // meaning that some levels will still have an output in them.
+    SECTION("upgrade way before publish")
+    {
+        // Upgrade happened early enough to allow new-style buckets to propagate
+        // down to level 2 snap, so, that all levels up to 3 are performing new
+        // style merges.
+        uint32_t upgradeLedger = 64;
+        verifyFutureBucketsInHAS(catchupSimulation, upgradeLedger, 3);
+    }
+    SECTION("upgrade slightly later")
+    {
+        // Between ledger 80 and 127, there is not enough ledgers to propagate
+        // new-style bucket to level 2 snap, so level 3 still performs an
+        // old-style merge, while all levels above perform new style merges.
+        uint32_t upgradeLedger = 80;
+        verifyFutureBucketsInHAS(catchupSimulation, upgradeLedger, 2);
+    }
+    SECTION("upgrade close to publish")
+    {
+        // At upgrade ledger 125, level0Curr is new-style. Then, at ledger 126,
+        // a new-style merge for level 1 is started (lev0Snap is new-style, so
+        // level 0 and 1 should be clear
+        uint32_t upgradeLedger = 125;
+        verifyFutureBucketsInHAS(catchupSimulation, upgradeLedger, 1);
+    }
+    SECTION("upgrade right before publish")
+    {
+        // At ledger 127, only level0Curr is of new version, so all levels below
+        // are left as-is.
+        uint32_t upgradeLedger = 127;
+        verifyFutureBucketsInHAS(catchupSimulation, upgradeLedger, 0);
+    }
 }
 
 static std::string
@@ -322,7 +437,7 @@ dbModeName(Config::TestDbMode mode)
     }
 }
 
-TEST_CASE("History catchup", "[history][catchup]")
+TEST_CASE("History catchup", "[history][catchup][acceptance]")
 {
     // needs REAL_TIME here, as prepare-snapshot works will fail for one of the
     // sections again and again - as it is set to RETRY_FOREVER it can generate
@@ -413,7 +528,8 @@ TEST_CASE("History catchup", "[history][catchup]")
     }
 }
 
-TEST_CASE("History catchup with different modes", "[history][catchup]")
+TEST_CASE("History catchup with different modes",
+          "[history][catchup][acceptance]")
 {
     CatchupSimulation catchupSimulation{};
 
@@ -446,7 +562,7 @@ TEST_CASE("History catchup with different modes", "[history][catchup]")
     }
 }
 
-TEST_CASE("History prefix catchup", "[history][catchup][prefixcatchup]")
+TEST_CASE("History prefix catchup", "[history][catchup]")
 {
     CatchupSimulation catchupSimulation{};
 
@@ -481,8 +597,82 @@ TEST_CASE("History prefix catchup", "[history][catchup][prefixcatchup]")
     REQUIRE(b->getLedgerManager().getLastClosedLedgerNum() == 2 * freq + 7);
 }
 
+TEST_CASE("Catchup post-shadow-removal works", "[history]")
+{
+    uint32_t newProto = Bucket::FIRST_PROTOCOL_SHADOWS_REMOVED;
+    uint32_t oldProto = newProto - 1;
+
+    auto configurator =
+        std::make_shared<RealGenesisTmpDirHistoryConfigurator>();
+    CatchupSimulation catchupSimulation{VirtualClock::VIRTUAL_TIME,
+                                        configurator};
+
+    catchupSimulation.generateRandomLedger(oldProto);
+
+    // Different counts: with proto 12, catchup should adapt and switch merge
+    // logic
+    std::vector<uint32_t> counts = {0, std::numeric_limits<uint32_t>::max(),
+                                    60};
+
+    SECTION("Upgrade at checkpoint start")
+    {
+        uint32_t upgradeLedger = 64;
+        catchupSimulation.setProto12UpgradeLedger(upgradeLedger);
+        auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(3);
+        catchupSimulation.ensureOnlineCatchupPossible(checkpointLedger);
+
+        for (auto count : counts)
+        {
+            auto a = catchupSimulation.createCatchupApplication(
+                count, Config::TESTDB_IN_MEMORY_SQLITE,
+                std::string("full, ") + resumeModeName(count) + ", " +
+                    dbModeName(Config::TESTDB_IN_MEMORY_SQLITE));
+
+            REQUIRE(catchupSimulation.catchupOnline(a, checkpointLedger));
+        }
+    }
+    SECTION("Upgrade mid-checkpoint")
+    {
+        // Notice the effect of shifting the upgrade by one ledger:
+        // At ledger 64, spills of levels 1,2,3 occur, starting merges with
+        // _old-style_ logic.
+        // Then at ledger 65, an upgrade happens, but old merges are still valid
+        uint32_t upgradeLedger = 65;
+        catchupSimulation.setProto12UpgradeLedger(upgradeLedger);
+        auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(3);
+        catchupSimulation.ensureOnlineCatchupPossible(checkpointLedger);
+
+        for (auto count : counts)
+        {
+            auto a = catchupSimulation.createCatchupApplication(
+                count, Config::TESTDB_IN_MEMORY_SQLITE,
+                std::string("full, ") + resumeModeName(count) + ", " +
+                    dbModeName(Config::TESTDB_IN_MEMORY_SQLITE));
+
+            REQUIRE(catchupSimulation.catchupOnline(a, checkpointLedger));
+        }
+    }
+    SECTION("Apply-buckets old-style merges, upgrade during tx replay")
+    {
+        // Ensure that ApplyBucketsWork correctly restarts old-style merges
+        // during catchup. Upgrade happens at ledger 70, so catchup applies
+        // buckets for the first checkpoint, then replays ledgers 64...127.
+        uint32_t upgradeLedger = 70;
+        catchupSimulation.setProto12UpgradeLedger(upgradeLedger);
+        auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(2);
+        catchupSimulation.ensureOnlineCatchupPossible(checkpointLedger);
+
+        auto a = catchupSimulation.createCatchupApplication(
+            32, Config::TESTDB_IN_MEMORY_SQLITE,
+            std::string("full, ") + resumeModeName(32) + ", " +
+                dbModeName(Config::TESTDB_IN_MEMORY_SQLITE));
+
+        REQUIRE(catchupSimulation.catchupOnline(a, checkpointLedger));
+    }
+}
+
 TEST_CASE("Catchup non-initentry buckets to initentry-supporting works",
-          "[history][historyinitentry]")
+          "[history][bucket][acceptance]")
 {
     uint32_t newProto =
         Bucket::FIRST_PROTOCOL_SUPPORTING_INITENTRY_AND_METAENTRY;
@@ -564,7 +754,7 @@ TEST_CASE("Catchup non-initentry buckets to initentry-supporting works",
 }
 
 TEST_CASE("Publish catchup alternation with stall",
-          "[history][catchup][catchupalternation]")
+          "[history][catchup][acceptance]")
 {
     CatchupSimulation catchupSimulation{};
     auto& lm = catchupSimulation.getApp().getLedgerManager();
@@ -619,77 +809,6 @@ TEST_CASE("Publish catchup alternation with stall",
 
     REQUIRE(catchupSimulation.catchupOnline(completeApp, targetLedger, 5));
     REQUIRE(catchupSimulation.catchupOnline(minimalApp, targetLedger, 5));
-}
-
-TEST_CASE("Repair missing buckets via history",
-          "[history][historybucketrepair]")
-{
-    CatchupSimulation catchupSimulation{};
-    auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(1);
-    catchupSimulation.ensureOfflineCatchupPossible(checkpointLedger);
-
-    // Forcibly resolve any merges in progress, so we have a calm state to
-    // repair;
-    // NB: we cannot repair lost buckets from merges-in-progress, as they're
-    // not
-    // necessarily _published_ anywhere.
-    HistoryArchiveState has(checkpointLedger + 1,
-                            catchupSimulation.getBucketListAtLastPublish());
-    has.resolveAllFutures();
-    auto state = has.toString();
-
-    auto cfg = getTestConfig(1);
-    cfg.BUCKET_DIR_PATH += "2";
-    VirtualClock clock;
-    auto app = createTestApplication(
-        clock,
-        catchupSimulation.getHistoryConfigurator().configure(cfg, false));
-    app->getPersistentState().setState(PersistentState::kHistoryArchiveState,
-                                       state);
-
-    app->start();
-    catchupSimulation.crankUntil(
-        app, [&]() { return app->getWorkScheduler().allChildrenDone(); },
-        std::chrono::seconds(30));
-
-    auto hash1 = catchupSimulation.getBucketListAtLastPublish().getHash();
-    auto hash2 = app->getBucketManager().getBucketList().getHash();
-    REQUIRE(hash1 == hash2);
-}
-
-TEST_CASE("Repair missing buckets fails", "[history][historybucketrepair]")
-{
-    CatchupSimulation catchupSimulation{};
-    auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(1);
-    catchupSimulation.ensureOfflineCatchupPossible(checkpointLedger);
-
-    // Forcibly resolve any merges in progress, so we have a calm state to
-    // repair;
-    // NB: we cannot repair lost buckets from merges-in-progress, as they're
-    // not
-    // necessarily _published_ anywhere.
-    HistoryArchiveState has(checkpointLedger + 1,
-                            catchupSimulation.getBucketListAtLastPublish());
-    has.resolveAllFutures();
-    auto state = has.toString();
-
-    // Delete buckets from the archive before proceding.
-    // This means startup will fail.
-    auto dir = catchupSimulation.getHistoryConfigurator().getArchiveDirName();
-    REQUIRE(!dir.empty());
-    fs::deltree(dir + "/bucket");
-
-    auto cfg = getTestConfig(1);
-    VirtualClock clock;
-    cfg.BUCKET_DIR_PATH += "2";
-    auto app = createTestApplication(
-        clock,
-        catchupSimulation.getHistoryConfigurator().configure(cfg, false));
-    app->getPersistentState().setState(PersistentState::kHistoryArchiveState,
-                                       state);
-
-    // will crash on startup after retrying to repair buckets a few times
-    REQUIRE_THROWS_AS(app->start(), std::runtime_error);
 }
 
 TEST_CASE("Publish catchup via s3", "[!hide][s3]")
@@ -754,7 +873,7 @@ TEST_CASE("HAS in publish queue is resolved", "[history]")
     REQUIRE(has.allBuckets() == pqb);
 }
 
-TEST_CASE("persist publish queue", "[history]")
+TEST_CASE("persist publish queue", "[history][publish][acceptance]")
 {
     Config cfg(getTestConfig(0, Config::TESTDB_ON_DISK_SQLITE));
     cfg.MAX_CONCURRENT_SUBPROCESSES = 0;
@@ -792,7 +911,8 @@ TEST_CASE("persist publish queue", "[history]")
     {
         VirtualClock clock;
         Application::pointer app1 = Application::create(clock, cfg, 0);
-        app1->getHistoryArchiveManager().initializeHistoryArchive("test");
+        app1->getHistoryArchiveManager().initializeHistoryArchive(
+            tcfg.getArchiveDirName());
         for (size_t i = 0; i < 100; ++i)
             clock.crank(false);
         app1->start();
@@ -824,7 +944,7 @@ TEST_CASE("persist publish queue", "[history]")
 // The idea with this test is that we join a network and somehow get a gap
 // in the SCP voting sequence while we're trying to catchup. This will let
 // system catchup just before the gap.
-TEST_CASE("catchup with a gap", "[history][catchup][catchupstall]")
+TEST_CASE("catchup with a gap", "[history][catchup][acceptance]")
 {
     CatchupSimulation catchupSimulation{};
     auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(1);
@@ -860,7 +980,7 @@ TEST_CASE("catchup with a gap", "[history][catchup][catchupstall]")
  * Test a variety of orderings of CATCHUP_RECENT mode, to shake out boundary
  * cases.
  */
-TEST_CASE("Catchup recent", "[history][catchup][catchuprecent][!hide]")
+TEST_CASE("Catchup recent", "[history][catchup][acceptance]")
 {
     CatchupSimulation catchupSimulation{};
     auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(3);
@@ -910,7 +1030,7 @@ TEST_CASE("Catchup recent", "[history][catchup][catchuprecent][!hide]")
 /*
  * Test a variety of LCL/initLedger/count modes.
  */
-TEST_CASE("Catchup manual", "[history][catchup][catchupmanual]")
+TEST_CASE("Catchup manual", "[history][catchup][acceptance]")
 {
     CatchupSimulation catchupSimulation{};
     auto checkpointLedger = catchupSimulation.getLastCheckpointLedger(6);
@@ -944,14 +1064,14 @@ TEST_CASE("initialize existing history store fails", "[history]")
     {
         VirtualClock clock;
         Application::pointer app = createTestApplication(clock, cfg);
-        REQUIRE(
-            app->getHistoryArchiveManager().initializeHistoryArchive("test"));
+        REQUIRE(app->getHistoryArchiveManager().initializeHistoryArchive(
+            tcfg.getArchiveDirName()));
     }
 
     {
         VirtualClock clock;
         Application::pointer app = createTestApplication(clock, cfg);
-        REQUIRE(
-            !app->getHistoryArchiveManager().initializeHistoryArchive("test"));
+        REQUIRE(!app->getHistoryArchiveManager().initializeHistoryArchive(
+            tcfg.getArchiveDirName()));
     }
 }

@@ -25,7 +25,7 @@
 
 namespace stellar
 {
-const uint32 Config::CURRENT_LEDGER_PROTOCOL_VERSION = 11;
+const uint32 Config::CURRENT_LEDGER_PROTOCOL_VERSION = 12;
 
 // Options that must only be used for testing
 static const std::unordered_set<std::string> TESTING_ONLY_OPTIONS = {
@@ -83,7 +83,7 @@ Config::Config() : NODE_SEED(SecretKey::random())
     MAXIMUM_LEDGER_CLOSETIME_DRIFT = 50;
 
     OVERLAY_PROTOCOL_MIN_VERSION = 8;
-    OVERLAY_PROTOCOL_VERSION = 9;
+    OVERLAY_PROTOCOL_VERSION = 10;
 
     VERSION_STR = STELLAR_CORE_VERSION;
 
@@ -105,6 +105,7 @@ Config::Config() : NODE_SEED(SecretKey::random())
     FAILURE_SAFETY = -1;
     UNSAFE_QUORUM = false;
     DISABLE_BUCKET_GC = false;
+    DISABLE_XDR_FSYNC = false;
 
     LOG_FILE_PATH = "stellar-core.%datetime{%Y.%M.%d-%H:%m:%s}.log";
     BUCKET_DIR_PATH = "buckets";
@@ -661,6 +662,10 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
             {
                 UNSAFE_QUORUM = readBool(item);
             }
+            else if (item.first == "DISABLE_XDR_FSYNC")
+            {
+                DISABLE_XDR_FSYNC = readBool(item);
+            }
             else if (item.first == "KNOWN_CURSORS")
             {
                 KNOWN_CURSORS = readStringArray(item);
@@ -1023,13 +1028,12 @@ Config::adjust()
     int maxFsConnections = std::min<int>(
         std::numeric_limits<unsigned short>::max(), fs::getMaxConnections());
 
-    auto totalRequiredConnections = TARGET_PEER_CONNECTIONS +
-                                    MAX_ADDITIONAL_PEER_CONNECTIONS +
-                                    MAX_PENDING_CONNECTIONS;
-
     auto totalAuthenticatedConnections =
         TARGET_PEER_CONNECTIONS + MAX_ADDITIONAL_PEER_CONNECTIONS;
-    if (totalAuthenticatedConnections > 0 && totalRequiredConnections > 0)
+
+    int maxPendingConnections = MAX_PENDING_CONNECTIONS;
+
+    if (totalAuthenticatedConnections > 0)
     {
         auto outboundPendingRate =
             double(TARGET_PEER_CONNECTIONS) / totalAuthenticatedConnections;
@@ -1042,8 +1046,26 @@ Config::adjust()
                 std::max<int>(1, cappedToUnsignedShort));
         };
 
-        if (totalRequiredConnections > maxFsConnections)
+        // see if we need to reduce maxPendingConnections
+        if (totalAuthenticatedConnections + maxPendingConnections >
+            maxFsConnections)
         {
+            maxPendingConnections =
+                totalAuthenticatedConnections >= maxFsConnections
+                    ? 1
+                    : static_cast<unsigned short>(
+                          maxFsConnections - totalAuthenticatedConnections);
+        }
+
+        // if we're still over, we scale everything
+        if (totalAuthenticatedConnections + maxPendingConnections >
+            maxFsConnections)
+        {
+            maxPendingConnections = std::max<int>(MAX_PENDING_CONNECTIONS, 1);
+
+            int totalRequiredConnections =
+                totalAuthenticatedConnections + maxPendingConnections;
+
             auto outboundRate =
                 (double)TARGET_PEER_CONNECTIONS / totalRequiredConnections;
             auto inboundRate = (double)MAX_ADDITIONAL_PEER_CONNECTIONS /
@@ -1056,32 +1078,25 @@ Config::adjust()
 
             auto authenticatedConnections =
                 TARGET_PEER_CONNECTIONS + MAX_ADDITIONAL_PEER_CONNECTIONS;
-            MAX_PENDING_CONNECTIONS =
+            maxPendingConnections =
                 authenticatedConnections >= maxFsConnections
                     ? 1
                     : static_cast<unsigned short>(maxFsConnections -
                                                   authenticatedConnections);
         }
 
-        // allow setting own values for testing purposes
+        MAX_PENDING_CONNECTIONS = static_cast<unsigned short>(std::min<int>(
+            std::numeric_limits<unsigned short>::max(), maxPendingConnections));
+
+        // derive outbound/inbound pending connections
+        // from MAX_PENDING_CONNECTIONS, using the ratio of inbound/outbound
+        // connections
         if (MAX_OUTBOUND_PENDING_CONNECTIONS == 0 &&
             MAX_INBOUND_PENDING_CONNECTIONS == 0)
         {
-            if (TARGET_PEER_CONNECTIONS <=
-                std::numeric_limits<unsigned short>::max() / 2)
-            {
-                MAX_OUTBOUND_PENDING_CONNECTIONS = TARGET_PEER_CONNECTIONS * 2;
-            }
-            else
-            {
-                MAX_OUTBOUND_PENDING_CONNECTIONS =
-                    std::numeric_limits<unsigned short>::max();
-            }
-
-            MAX_OUTBOUND_PENDING_CONNECTIONS =
-                std::min(MAX_OUTBOUND_PENDING_CONNECTIONS,
-                         doubleToNonzeroUnsignedShort(MAX_PENDING_CONNECTIONS *
-                                                      outboundPendingRate));
+            MAX_OUTBOUND_PENDING_CONNECTIONS = std::max<unsigned short>(
+                1, doubleToNonzeroUnsignedShort(MAX_PENDING_CONNECTIONS *
+                                                outboundPendingRate));
             MAX_INBOUND_PENDING_CONNECTIONS = std::max<unsigned short>(
                 1, MAX_PENDING_CONNECTIONS - MAX_OUTBOUND_PENDING_CONNECTIONS);
         }
@@ -1175,6 +1190,15 @@ Config::validateConfig(bool mixed)
         LOG(INFO) << " Current QUORUM_SET breaks with " << r.size()
                   << " failures";
         throw;
+    }
+
+    if (!isQuorumSetSane(QUORUM_SET, !UNSAFE_QUORUM))
+    {
+        LOG(FATAL) << fmt::format("Invalid QUORUM_SET: check nesting, "
+                                  "duplicate entries and thresholds (must be "
+                                  "between {} and 100)",
+                                  UNSAFE_QUORUM ? 1 : 51);
+        throw std::invalid_argument("Invalid QUORUM_SET");
     }
 }
 

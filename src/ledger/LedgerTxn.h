@@ -577,6 +577,10 @@ class LedgerTxnRoot : public AbstractLedgerTxnParent
     void dropOffers();
     void dropTrustLines();
 
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    void resetForFuzzer();
+#endif // FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+
     std::unordered_map<LedgerKey, LedgerEntry> getAllOffers() override;
 
     std::shared_ptr<LedgerEntry const>
@@ -597,11 +601,6 @@ class LedgerTxnRoot : public AbstractLedgerTxnParent
 
     void rollbackChild() override;
 
-    void writeSignersTableIntoAccountsTable();
-    void encodeDataNamesBase64();
-    void encodeHomeDomainsBase64();
-
-    void writeOffersIntoSimplifiedOffersTable();
     uint32_t prefetch(std::unordered_set<LedgerKey> const& keys);
     double getPrefetchHitRate() const;
 };
